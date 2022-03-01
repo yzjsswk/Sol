@@ -35,9 +35,11 @@ int a[N];
 int tree[N], tree1[N], tree2[N];
 void update(int i, int x){
     //前缀和
-    for( ; i <= n; i += i & -i) tree[i] += x;
+    for( ; i <= n; i += i & -i) 
+        tree[i] += x;
     //前缀最值
-    for( ; i <= n; i += i & -i) tree[i] = max(tree[i], x);
+    for( ; i <= n; i += i & -i) 
+        tree[i] = max(tree[i], x);
     //区间修改, 区间查询
     for(int k = i; i <= n; i += i & -i) 
         tree1[i] += x, tree2[i] += k * x;
@@ -45,9 +47,11 @@ void update(int i, int x){
 int query(int i){
     int ret = 0;
     //前缀和
-    for( ; i > 0; i -= i & -i) ret += tree[i];
+    for( ; i > 0; i -= i & -i) 
+        ret += tree[i];
     //前缀最值
-    for( ; i > 0; i -= i & -i) ret = max(ret, tree[i]);
+    for( ; i > 0; i -= i & -i) 
+        ret = max(ret, tree[i]);
     //区间修改, 区间查询
     for(int k = i + 1; i > 0; i -= i & -i) 
         ret += tree1[i] * k - tree2[i];
