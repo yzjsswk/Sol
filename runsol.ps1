@@ -4,5 +4,5 @@ $run = "cat in.txt | $filename.exe > out.txt"
 $clear = "rm $filename.exe"
 iex $compile
 iex $run
-Start-Sleep -s 2
-iex $clear 
+#Start-Sleep -s 2
+#iex $clear 
