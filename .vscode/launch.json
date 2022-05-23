@@ -2,6 +2,13 @@
     "version": "0.2.0",  
     "configurations": [
         {
+            "type": "java",
+            "name": "Launch JavaSol",
+            "request": "launch",
+            "mainClass": "JavaSol",
+            "projectName": "Sol_6e802c7a"
+        },
+        {
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",

@@ -4,9 +4,9 @@ using namespace std;
 #define ll long long
 #define N 10000
 
+
+
 int n, m;
-
-
 int S, T;
 Edge edge[5000000];
 int G[N];
