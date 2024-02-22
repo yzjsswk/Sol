@@ -1,17 +1,27 @@
 from typing import *
 import os
 import time
+import math
+import itertools as its
+import functools as fts
 import re
 import json as js
 import hashlib
 import clipboard
 import random
 from PIL import Image
-import math
+import sqlite3
+import zipfile
 
 #------------------------
 
 class ybytes(bytes):
+    
+    @staticmethod
+    def from_file(filepath: str) -> 'ybytes':
+        with open(filepath, 'rb') as f:
+            content = f.read()
+        return ybytes(content)
 
     @staticmethod
     def from_str(s: str, encode='utf-8') -> 'ybytes':
@@ -19,6 +29,32 @@ class ybytes(bytes):
     
     def to_str(self, encode='utf-8') -> 'ystr':
         return ystr(self.decode(encoding=encode))
+    
+    def size(self) -> 'ystr':
+        B_count = len(self)
+        if B_count < 1024:
+            return f'{B_count}B'
+        KB_count = B_count / 1024
+        if KB_count < 1024:
+            return f'{KB_count}KB'
+        MB_count = KB_count / 1024
+        if MB_count < 1024:
+            return f'{MB_count}MB'
+        GB_count = MB_count / 1024
+        return f'{GB_count}GB'
+    
+    @staticmethod
+    def compress(output_path: str, *filepath: str):
+        if ystr(output_path).filepath().exist():
+            raise Exception("output_path exists")
+        with zipfile.ZipFile(output_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as f:
+            for file in filepath:
+                f.write(file)
+
+    @staticmethod
+    def extract(zip_file: str, output_dir: str):
+        with zipfile.ZipFile(zip_file, 'r') as f:
+            f.extractall(output_dir)
 
 #------------------------
 
@@ -66,6 +102,9 @@ class ystr(str):
 
     def timestamp(self) -> 'timestamp':
         return timestamp(self)
+
+    def timedelta(self) -> 'timedelta':
+        return timedelta(self)
 
     def url(self) -> 'url':
         return url(self)
@@ -131,6 +170,9 @@ class ystr(str):
     
     def join(self, ss: Iterable[str]) -> 'ystr':
         return ystr(super().join(ss))
+
+    def replace(self, t: str, by: str, limit=-1) -> 'ystr':
+        return ystr(super().replace(t, by, limit))
 
     def to_rows(self) -> list['ystr']:
         return self.split('\n', trim_each=True, remove_null=True)
@@ -348,11 +390,11 @@ class ystr(str):
         x1, y1 = self.find_first(l)
         x2, y2 = self.find_last(r)
         if x1 == -1 and x2 == -1:
-            return '', self, ''
+            return ystr(), self, ystr()
         if x1 == -1:
-            return '', self[:x2], self[y2:]
+            return ystr(), self[:x2], self[y2:]
         if x2 == -1:
-            return self[:x1], self[y1:], ''
+            return self[:x1], self[y1:], ystr()
         return self[:x1], self[y1:x2], self[y2:]
 
     # 根据by进行split但忽略brackets中的by
@@ -412,7 +454,7 @@ class variable():
         self.s = ystr(s)
 
     def format(self, style: str) -> 'ystr':
-        if len(style) < 4:
+        if self.s == '' or len(style) < 4:
             return self.s
         def split_to_words(s: ystr) -> list['ystr']:
             if '_' in s:
@@ -448,34 +490,73 @@ class variable():
 
 class datetime():
 
-    def __init__(self, s: str) -> None:
+    def __init__(self, s: str, fmt='%Y-%m-%d %H:%M:%S') -> None:
         self.s = ystr(s)
+        self.time_struct = time.strptime(self.s, fmt) if len(s) > 0 else None
 
     def to_timestamp(self) -> 'ystr':
-        if len(self.s) < 12:
-            date = time.strptime(self.s, "%Y-%m-%d")
-        else:
-            date = time.strptime(self.s, "%Y-%m-%d %H:%M:%S")
-        return ystr(int(time.mktime(date)))
+        if self.time_struct == None:
+            return ystr('0000000000')
+        return ystr(int(time.mktime(self.time_struct)))
     
     @staticmethod
     def now() -> 'ystr':
         return ystr().timestamp().now().timestamp().to_datetime()
+    
+    def weekday(self) -> int:
+        if self.time_struct == None:
+            return 0
+        return self.time_struct.tm_wday + 1
+    
+    def yearday(self) -> int:
+        if self.time_struct == None:
+            return 0
+        return self.time_struct.tm_yday
+    
+    def delta(self, dt: str) -> 'ystr':
+        delta_second = self.to_timestamp().timestamp().delta(ystr(dt).datetime().to_timestamp())
+        return ystr().timedelta().from_second(int(delta_second)).s
+    
+    def plus(self, td: str) -> 'ystr':
+        return self.to_timestamp().timestamp().plus(ystr(td).timedelta().to_second()).timestamp().to_datetime()
 
 class timestamp():
 
-    # 13位精度到毫秒; 10位精度到秒
+    # 只处理到秒
     def __init__(self, s: str, format=False) -> None:
-        self.s = ystr(s).number().format(13) if format else ystr(s)
+        self.s = ystr(s).number().format(10) if format else ystr(s)
 
     @staticmethod
     def now() -> 'ystr':
         return ystr(int(time.time()))
 
-    # 精度到秒
     def to_datetime(self, fmt="%Y-%m-%d %H:%M:%S") -> 'ystr':
         t = time.localtime(int(self.s[:10]))
         return ystr(time.strftime(fmt, t))
+    
+    def plus(self, second: int) -> 'ystr':
+        return self.s.number().calculate('+'+str(second))
+    
+    def delta(self, ts: ystr) -> 'ystr':
+        return self.s.number().calculate('-'+ts)
+
+class timedelta():
+
+    def __init__(self, s: str) -> None:
+        self.s = ystr(s)
+    
+    @staticmethod
+    def from_second(second: int) -> 'timedelta':
+        flag = '-' if second < 0 else ''            
+        second = abs(second)
+        m, s = second // 60, second % 60
+        h, m = m // 60, m % 60
+        d, h = h // 24, h % 24
+        return timedelta(f'{flag}{d}d{h}h{m}m{s}s')
+    
+    def to_second(self) -> int:
+        d, h, m, s = self.s.re_findall('\d+')
+        return (((int(d)*24+int(h))*60+int(m))*60+int(s))*(-1 if self.s[0]=='-' else 1)
 
 class filepath():
 
@@ -516,6 +597,9 @@ class filepath():
 
     def txt(self, encode='utf-8') -> 'TextFileHandler':
         return TextFileHandler(self.s, encode)
+    
+    def db(self) -> 'DBFileHandler':
+        return DBFileHandler(self.s)
         
 class TextFileHandler:
     
@@ -526,8 +610,99 @@ class TextFileHandler:
         self.md5 = self.content.md5()
 
     def to_json(self) -> 'ystr':
-        return ystr().json().from_object(self)    
+        return ystr().json().from_object(self)
 
+class DBFileHandler:
+
+    def __init__(self, path) -> None:
+        self.path = path
+        self.con = sqlite3.connect(path)
+        # self.con = sqlite3.connect(db_path, check_same_thread=False)
+        self.cr = self.con.cursor()
+
+    def execute(self, sql: str, auto_commit=True, auto_close=True) -> 'ylist':
+        try:
+            res = self.cr.execute(sql).fetchall()
+        except Exception as e:
+            print(f'Debug: sql = {sql}')
+            e.add_note(f'Note: sql = {sql}')
+            raise
+        if auto_commit:
+            self.commit()
+        if auto_close:
+            self.close()
+        return ylist(res)
+
+    def commit(self):
+        self.con.commit()
+
+    def close(self):
+        self.con.close()
+
+    def table(self, table_name: str):
+        return SimpleSqlExecuter(self, table_name)
+    
+    def tables(self) -> 'ylist':
+        res = self.table('sqlite_master').cols('name').select().flatten()
+        res.remove('sqlite_sequence')
+        return res
+
+class SimpleSqlExecuter:
+
+    def __init__(self, dao: DBFileHandler, table_name: str) -> None:
+        self.dao = dao
+        self.table_name = table_name
+        self.sb = SimpleSqlBuilder()
+        self.sb.table(table_name)
+
+    def cols(self, *col: str) -> 'SimpleSqlExecuter':
+        self.sb.cols(*col)
+        return self
+
+    def add_row(self, *value) -> 'SimpleSqlExecuter':
+        self.sb.add_row(*value)
+        return self
+    
+    def set(self, *set_fragment: str) -> 'SimpleSqlExecuter':
+        self.sb.set(*set_fragment)
+        return self
+
+    def where(self, where_fragment: str) -> 'SimpleSqlExecuter':
+        self.sb.where(where_fragment)
+        return self
+    
+    def insert(self) -> 'ylist':
+        self.sb.method('insert')
+        sql = self.sb.build()
+        return self.dao.execute(sql)
+
+    def update(self) -> 'ylist':
+        self.sb.method('update')
+        sql = self.sb.build()
+        return self.dao.execute(sql)
+    
+    def delete(self) -> 'ylist':
+        self.sb.method('delete')
+        sql = self.sb.build()
+        return self.dao.execute(sql)
+    
+    def select(self) -> 'ylist':
+        self.sb.method('select')
+        sql = self.sb.build()
+        return self.dao.execute(sql)
+
+    def describe(self) -> 'ystr':
+        res = self.dao.execute(
+            f"select sql from sqlite_master where name = '{self.table_name}'",
+            auto_close = False,
+        ).flatten()
+        if len(res) == 0:
+            raise Exception(f'table {self.table_name} not exists')
+        table_detail = ystr(res[0]).sql().parse()
+        row_count = self.dao.execute(f'select count(*) from {self.table_name}').flatten()
+        table_detail.row_count = row_count[0]
+        return ystr().json().from_object(table_detail)
+            
 class java():
 
     def __init__(self, s: str) -> None:
@@ -535,23 +710,20 @@ class java():
 
     def parse(self):
         try:
-            return JavaFunc(self.s)
+            return JavaClass(self.s)
         except:
             try:
-                return JavaClass(self.s)
+                return JavaFunc(self.s)
             except:
                 raise
         
 class JavaFuncPara:
-
-    def __new__(cls, para_raw = None) -> Self:
-        self = super().__new__(cls)
+    
+    def __init__(self, para_raw: str = None) -> None:
         self.type = ''
         self.name = ''
         self.extra = ''
-        return self
-    
-    def __init__(self, para_raw: str = None) -> None:
+
         if para_raw == None:
             return
         parts = list(ystr(para_raw).strip().close_split())
@@ -559,43 +731,98 @@ class JavaFuncPara:
         self.type = parts[-2].shrink(' ')
         if len(parts) > 2:
             self.extra = ''.join(parts[:-2])
+    
+    def to_code(self) -> 'ystr':
+        return f'{self.type} {self.name}'
+    
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
 
 class JavaFunc:
 
-    def __new__(cls, func_raw: str = None):
-        self = super().__new__(cls)
+    def __init__(self, func_raw: str = None) -> None:
         self.func_name = ''
         self.access_level = ''
         self.return_type = ''
         self.paras: list[JavaFuncPara] = []
         self.throw = ''
-        self.body = ''
+        self.body = '' # 带tab
+        self.annotations: list[ystr] = [] # 暂未解析
         self.extra = ''
-        return self
 
-    def __init__(self, func_raw: str = None) -> None:
         if func_raw == None:
             return
         func_raw = ystr(func_raw)
         _, x, _ = func_raw.re_search(r'(public|private|protect)')
         self.extra = func_raw[:x]
         func_head, self.body, _ = func_raw[x:].strip().lr_split('{', '}')
+        if func_head == '':
+            func_head = self.body
+            self.body = ''
         head_prefix, head_paras, self.throw = func_head.strip().lr_split('(', ')')
         self.access_level, self.return_type, self.func_name = head_prefix.strip().lr_split()
         self.paras = [JavaFuncPara(p) for p in head_paras.strip().close_split(',')]
 
+    def to_code(self) -> 'ystr':
+        ret = ystr()
+        for an in self.annotations:
+            ret += an + '\n'
+        ret += f'{self.access_level} {self.return_type} {self.func_name}('
+        ret += f'{", ".join(p.to_code() for p in self.paras)})'
+        if self.throw != '':
+            ret += f' throws {self.throw}'
+        ret += ' {\n'
+        ret += self.body.strip('\n').rstrip()
+        ret += '\n}\n'
+        return ret
+    
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
+
+    def gen_ut(self, class_type: str = '') -> 'JavaFunc':
+        if class_type.endswith('Service'):
+            class_type += 'Impl'
+        class_name = ystr(class_type).variable().aaBb()
+        res = JavaFunc()
+        res.annotations.append('@Test')
+        res.access_level = 'public'
+        res.return_type = 'void'
+        res.func_name = f'test{self.func_name.variable().AaBb()}'
+        if self.access_level == 'private':
+            res.throw = 'NoSuchMethodException'
+        body = ''
+        if self.access_level == 'private':
+            body += f'    Method targetMethod = {class_type}.class.getDeclaredMethod("{self.func_name}",\n'
+            def get_reflect_class(type):
+                pt = ParaGenTool(type)
+                return pt.collection if pt.collection != '' else pt.full_type
+            body += '        ' + ', '.join([f'{get_reflect_class(p.type)}.class' for p in self.paras]) + ');\n'
+            body += '    targetMethod.setAccessible(true);\n'
+        pts = [ParaGenTool(p.type, p.name) for p in self.paras]
+        for pt in pts:
+            body += pt.gen_new().text().add_tab()
+        body += '    try {\n'
+        if self.access_level == 'private':
+            body += f"        targetMethod.invoke({class_name}, {', '.join([pt.name for pt in pts])});\n"
+        else:
+            body += f"        {class_name}.{self.func_name}({', '.join([pt.name for pt in pts])});\n"
+        body += '        assertTrue(CAN_REACH_HERE);\n'
+        body += '    } catch (Exception e) {\n'
+        body += '        fail();\n'
+        body += '    }'
+        res.body = body
+        return res
+
 class JavaField:
 
-    def __new__(cls, field_raw: str = None) -> Self:
-        self = super().__new__(cls)
+    def __init__(self, field_raw: str = None) -> None:
         self.name = ''
         self.type = ''
         self.access_level = ''
         self.comment = ''
+        self.annotations: list[ystr] = [] # 暂未解析
         self.extra = ''
-        return self
 
-    def __init__(self, field_raw: str = None) -> None:
         if field_raw == None:
             return
         field_raw = ystr(field_raw).shrink()
@@ -605,7 +832,7 @@ class JavaField:
         self.comment = cm.strip('/*').strip()
         pos__type = 0
         skip_words = ('public', 'private', 'protect', 'static', 'final')
-        fws = fd.strip(' ;').to_words()
+        fws = list(fd.strip(' ;').close_split())
         for i, w in enumerate(fws):
             if not w.of(*skip_words):
                 pos__type = i
@@ -613,51 +840,193 @@ class JavaField:
         self.type = fws[pos__type]
         self.name = fws[pos__type+1]
         self.access_level = fws[0]
-        
-class JavaClass:
 
-    def __new__(cls, java_raw: str) -> Self:
-        self = super().__new__(cls)
+    def to_code(self) -> 'ystr':
+        res = ystr()
+        if self.comment != '':
+            res += '/**\n'
+            res += f' * {self.comment}\n'
+            res += ' */\n'
+        for an in self.annotations:
+            res += an + '\n'
+        res += f'{self.access_level} {self.type} {self.name};\n'
+        return res
+
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
+
+class JavaClass:
+    
+    def __init__(self, java_raw: str = None) -> None:
         self.class_name = ''
         self.package = ''
         self.imports: list[ystr] = []
+        self.annotations: list[ystr] = []
         self.fields: list[JavaField] = []
         self.functions: list[JavaFunc] = []
-        return self
-    
-    def __init__(self, java_raw: str) -> None:
-        self.imports: list[ystr] = []
-        self.fields: list[JavaField] = []
-        self.functions: list[JavaFunc] = []
+
+        if java_raw == None:
+            return
         flag = True
         cache = ystr()
         for row in ystr(java_raw).to_rows():
-            if row.startswith('package '):
-                self.package = row.find_around(l=' ', r=';', after='package')
-            if row.startswith('import '):
-                self.imports.append(row.find_around(l=' ', r=';', after='import'))
-            if row.startswith('public class '):
-                self.class_name = row.find_around(l=' ', after='class')
-                flag = False
-                continue
             if flag:
+                if row.startswith('package '):
+                    self.package = row.find_around(l=' ', r=';', after='package')
+                if row.startswith('import '):
+                    self.imports.append(row.find_around(l=' ', r=';', after='import'))
+                if row.startswith('@'):
+                    self.annotations.append(row)
+                if row.startswith('public class '):
+                    self.class_name = row.find_around(l=' ', after='class')
+                    flag = False
                 continue
             cache += row
-            if self.content_field(cache):
+            if self.contain_field(cache):
                 self.fields.append(JavaField(cache))
                 cache = ystr()
-            if self.content_func(cache):
+            if self.contain_func(cache):
                 self.functions.append(JavaFunc(cache))
                 cache = ystr()
 
-    def content_field(self, cache: ystr) -> bool:
+    def contain_field(self, cache: ystr) -> bool:
         return cache.shrink().is_match(r'[\w\W]*(private|public|protect)[^{}]*;')
     
-    def content_func(self, cache: ystr) -> bool:
+    def contain_func(self, cache: ystr) -> bool:
         if not cache.shrink().is_match(r'[\w\W]*(private|public|protect)[\w\W]*{[\w\W]*}'):
             return False
         pos, _ = cache.find_first('{')
         return pos in cache.close_find('{', '}').keys()
+    
+    def to_code(self) -> 'ystr':
+        res = ystr()
+        res += self.package + ';\n\n'
+        res += ystr('\n').join(f'import {im};' for im in self.imports) + '\n\n'
+        res += ystr('\n').join(self.annotations) + '\n'
+        res += f'public {self.class_name} ' + '{\n\n'
+        for f in self.fields:
+            res += f.to_code().text().add_tab() + '\n'
+        for f in self.functions:
+            res += f.to_code().text().add_tab() + '\n'
+        res += '}'
+        return res
+    
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
+
+    def gen_ut(self) -> 'JavaClass':
+        res = JavaClass()
+        res.package = self.package
+        if 'confirm.rpc' in self.package:
+            res.imports.append('static com.bytedance.ea.finance.revenue.confirm.rpc.common.util.test.TestUtils.CAN_REACH_HERE')
+            res.imports.append('static com.bytedance.ea.finance.revenue.confirm.rpc.common.util.test.TestUtils.deepCopy')
+        else:
+            res.imports.append('static com.bytedance.revenue.common.util.test.TestUtils.CAN_REACH_HERE')
+            res.imports.append('static com.bytedance.revenue.common.util.test.TestUtils.deepCopy')
+        res.imports.append('static org.junit.Assert.assertFalse')
+        res.imports.append('static org.junit.Assert.assertTrue')
+        res.imports.append('static org.junit.Assert.fail')
+        res.imports.append('java.lang.reflect.Method')
+        res.imports.append('java.util.*')
+        res.imports.append('org.junit.Test')
+        res.imports.append('org.junit.runner.RunWith')
+        res.imports.append('org.mockito.InjectMocks')
+        res.imports.append('org.mockito.Mock')
+        res.imports.append('org.mockito.Mockito')
+        res.imports.append('org.powermock.core.classloader.annotations.PrepareForTest')
+        res.imports.append('org.powermock.modules.junit4.PowerMockRunner')
+        res.imports += self.imports
+        res.annotations.append('@RunWith(PowerMockRunner.class)')
+        res.annotations.append('@PrepareForTest({SpringApplicationUtils.class})')
+        res.class_name = self.class_name + 'Test'
+        tested_bean = JavaField()
+        tested_bean.annotations.append('@InjectMocks')
+        tested_bean.name = self.class_name.variable().aaBb().replace('Impl', '')
+        tested_bean.type = self.class_name
+        tested_bean.access_level = 'private'
+        res.fields.append(tested_bean)
+        for f in self.fields:
+            if '@Autowired' in f.extra or '@Resource' in f.extra:
+                mocked_bean = JavaField()
+                mocked_bean.annotations.append('@Mock')
+                mocked_bean.name = f.name
+                mocked_bean.type = f.type
+                mocked_bean.access_level = 'private'
+                res.fields.append(mocked_bean)
+        for f in self.functions:
+            try:
+                res.functions.append(f.gen_ut(self.class_name.replace('Impl', '')))
+            except Exception as e:
+                e.add_note(f'Note: when gen ut of func {f.func_name}')
+                raise
+        return res
+
+class ParaGenTool:
+
+    def __init__(self, type: str, name=None) -> None:
+        self.full_type = type
+        self.collection = ''
+        self.warpped = ''
+        self.name = name
+        
+        if type.startswith('List'):
+            self.collection = 'List'
+            self.warpped = ystr(type).find_around(l='<', r='>')
+        if type.startswith('Map'):
+            self.collection = 'Map'
+            self.warpped = ystr(type).find_around(l='<', r='>')
+        if self.name == None:
+            self.name = ParaGenTool.name_of_type(type)
+
+    def name_of_type(type: str, id: int = None) -> str:
+        id = '' if id == None else str(id)
+        if type in ('int', 'Integer', 'long', 'Long'):
+            return 'num' + id
+        if type == 'String':
+            return 'str' + id
+        if type in ('boolean', 'Boolean'):
+            return 'bool' + id
+        if type.startswith('List'):
+            warpped = ystr(type).find_around(l='<', r='>')
+            return warpped.variable().aaBb() + 'List' + id
+        if type.startswith('Map'):
+            warpped = ystr(type).find_around(l='<', r='>')
+            warpped_types = list(warpped.close_split(','))
+            return f'{warpped_types[0].variable().aaBb()}To{warpped_types[1].variable().AaBb()}Map' + id
+        return ystr(type).variable().aaBb() + id
+
+    def value_of_type(self, type: str, id: int = None) -> str:
+        if type in ('int', 'Integer'):
+            return str(1+(0 if id==None else id))
+        if type in ('long', 'Long'):
+            return str(1+(0 if id==None else id)) + 'L'
+        if type == 'String':
+            return '"test' + ystr(self.name).variable().AaBb() + (str(id) if id != None else '') + '"'
+        if type in ('boolean', 'Boolean'):
+            return 'true'
+        if type.endswith('Enum'):
+            return f'{type}.values()[0]'
+        return f'new {type}()'
+    
+    def gen_list(self, ele_num: int = 0) -> ystr:
+        if ele_num == None or ele_num < 0:
+            ele_num = 0
+        ele_type = self.warpped
+        ele_name = self.name if self.collection == '' else ParaGenTool.name_of_type(ele_type)
+        list_name = self.name if self.collection == 'List' else (ParaGenTool.name_of_type(ele_type)+'List')
+        res = ''
+        res += f'List<{ele_type}> {list_name} = new ArrayList<>();\n'
+        for i in range(ele_num):
+            res += f'{ele_type} {ele_name}{i+1} = {self.value_of_type(ele_type, i)};\n'
+            res += f'{list_name}.add({ele_name}{i+1});\n'
+        return ystr(res)
+    
+    def gen_new(self, ele_num: int = 0) -> ystr:
+        if ele_num == None or ele_num < 0:
+            ele_num = 0
+        if self.collection == 'List':
+            return self.gen_list(ele_num)
+        return ystr(f'{self.full_type} {self.name} = {self.value_of_type(self.full_type)};\n')
 
 class json():
 
@@ -695,11 +1064,17 @@ class number():
         if len(self.s) > length:
             return (self.s[-length:])
         return ystr(fill*(length-len(self.s))+self.s)
+    
+    def calculate(self, s: str) -> 'ystr':
+        return (self.s+s).mathematics().calculate()
 
 class mathematics():
 
     def __init__(self, s: str) -> None:
         self.s = ystr(s)
+
+    def calculate(self) -> 'ystr':
+        return ystr(eval(self.s))
 
 class sql():
 
@@ -727,6 +1102,64 @@ class sql():
     def parse(self):
         return Table(self.s)
 
+    @staticmethod
+    def builder() -> 'SimpleSqlBuilder':
+        return SimpleSqlBuilder()
+
+class SimpleSqlBuilder:
+
+    def __init__(self) -> None:
+        self.sql_type = ''
+        self.table_name = ''
+        self.columns: list[str] = []
+        self.insert_values: list[str] = []
+        self.update_sets: list[str] = []
+        self.where_fragment = ''
+        
+    def table(self, table_name: str) -> 'SimpleSqlBuilder':
+        self.table_name = table_name
+        return self
+
+    def cols(self, *col: str) -> 'SimpleSqlBuilder':
+        self.columns = list(col)
+        return self
+
+    def add_row(self, *value) -> 'SimpleSqlBuilder':
+        self.insert_values.append(f'({", ".join(value)})')
+        return self
+
+    def method(self, sql_type: str) -> 'SimpleSqlBuilder':
+        self.sql_type = sql_type
+        return self
+    
+    def set(self, *set_fragment: str) -> 'SimpleSqlBuilder':
+        self.update_sets = list(set_fragment)
+        return self
+
+    def where(self, where_fragment: str) -> 'SimpleSqlBuilder':
+        self.where_fragment = where_fragment
+        return self
+
+    def build(self) -> 'ystr':
+        if self.sql_type == 'insert':
+            sql = f"insert into {self.table_name} ({', '.join(self.columns)}) values {', '.join(self.insert_values)};"
+        elif self.sql_type == 'update':
+            sql = f"update {self.table_name} set {', '.join(self.update_sets)}"
+            if self.where_fragment != '':
+                sql += f" where {self.where_fragment};"
+        elif self.sql_type == 'delete':
+            sql = f"delete from {self.table_name}"
+            if self.where_fragment != '':
+                sql += f" where {self.where_fragment};"
+        elif self.sql_type == 'select':
+            cols_fragment = '*' if self.columns == [] else ', '.join(self.columns)
+            sql = f"select {cols_fragment} from {self.table_name}"
+            if self.where_fragment != '':
+                sql += f" where {self.where_fragment};"
+        else:
+            raise Exception(f'invalid sql type: {self.sql_type}')
+        return ystr(sql)
+
 class Col:
 
     def __init__(self) -> None:
@@ -735,6 +1168,9 @@ class Col:
         self.comment = ''
         self.can_null = True
         self.default = ''
+
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
     
 class Table:
 
@@ -789,6 +1225,9 @@ class Table:
                 raise
         self.extra = part3.strip(' ;')
 
+    def to_json(self) -> 'ystr':
+        return ystr().json().from_object(self)
+
 class text():
 
     def __init__(self, s: str) -> None:
@@ -803,6 +1242,12 @@ class text():
         res = '    ' + self.s[:poses[-1]].replace('\n', '\n    ') + \
             (t if (t:=self.s[poses[-1]:]).strip()=='' else t.replace('\n', '\n    '))
         return ystr(res)
+    
+    def pos_to_rid(self, pos: int) -> int:
+        if pos < 0 or pos >= len(self.s):
+            return -1
+        return len(self.s[:pos].re_findall('\n'))
+            
 
 class url():
 
@@ -824,12 +1269,22 @@ class ylist(list):
     
     def to_str(self, encode='utf-8') -> 'ystr':
         return ybytes(self).to_str(encode=encode)
+        
+    @staticmethod
+    def from_bytes(b: bytes) -> 'ylist':
+        return ylist(b)
+    
+    def to_bytes(self) -> 'ybytes':
+        return ybytes(self)
 
     def print(self) -> 'ylist':
         print('--------------------BEGIN--------------------')
         print(self)
         print('---------------------END---------------------')
         return self
+    
+    def count(self) -> int:
+        return len(self)
 
     def append(self, obj) -> 'ylist':
         super().append(obj)
@@ -1046,6 +1501,25 @@ class ypic():
         self.load_pps(gen_pixel_point(data))
         return self
     
+    def load_bytes(self, b: bytes, k0=None, k1=None, k2=None, shift=100, head_len=10) -> 'ypic':
+        def gen_pixel_point(data: list) -> list:
+            if data == None or len(data) == 0:
+                return []
+            res = [(0, 0, 0)]
+            for i, d in enumerate(data):
+                nxt_p, nxt_t = ypic.__get_next__(res[i], shift)
+                res.append((nxt_p, nxt_t, d))
+            return res[1:]
+        data = ylist.from_bytes(b)
+        str__len = ystr(len(data))
+        if len(str__len) > head_len:
+            raise Exception(f'head len too long which reach {len(str__len)}')
+        data = ylist(int(x) for x in str__len.number().format(head_len)) + data
+        if k0 != None:
+            data = data.trans().mapping__fibo(k0, k1, k2).finish()
+        self.load_pps(gen_pixel_point(data))
+        return self
+    
     def fetch_str(self, k0=None, k1=None, k2=None, shift=100, head_len=10) -> 'ystr':
         pp_data = list(self.p.getdata())
         pps = [(0, 0, 0)]
@@ -1060,6 +1534,21 @@ class ypic():
         body_len = int(ystr().join(ystr(x) for x in data[:head_len]))
         data = data[head_len:head_len+body_len]
         return ylist(data).to_str()
+    
+    def fetch_bytes(self, k0=None, k1=None, k2=None, shift=100, head_len=10) -> 'ybytes':
+        pp_data = list(self.p.getdata())
+        pps = [(0, 0, 0)]
+        while True:
+            nxt_p, nxt_t = ypic.__get_next__(pps[-1], shift)
+            if nxt_p >= len(pp_data):
+                break
+            pps.append((nxt_p, nxt_t, pp_data[nxt_p][nxt_t]))
+        data = ylist(pp[2] for pp in pps[1:])
+        if k0 != None:
+            data = data.trans().mapping__fibo(k0, k1, k2, reverse=True).finish()
+        body_len = int(ystr().join(ystr(x) for x in data[:head_len]))
+        data = data[head_len:head_len+body_len]
+        return ylist(data).to_bytes()
     
     def load_files(self, *filepath: str, k0=None, k1=None, k2=None, shift=100, head_len=10) -> 'ypic':
         all_content = {
