@@ -12,6 +12,8 @@ import random
 from PIL import Image
 import sqlite3
 import zipfile
+import uuid
+from loguru import logger
 
 #------------------------
 
@@ -30,18 +32,24 @@ class ybytes(bytes):
     def to_str(self, encode='utf-8') -> 'ystr':
         return ystr(self.decode(encoding=encode))
     
-    def size(self) -> 'ystr':
+    def desc(self) -> 'ystr':
+        try:
+            return self.to_str()
+        except:
+            return ystr(self.__str__()) 
+    
+    def size(self, n=2) -> 'ystr':
         B_count = len(self)
         if B_count < 1024:
-            return f'{B_count}B'
+            return f'{round(B_count, n)}B'
         KB_count = B_count / 1024
         if KB_count < 1024:
-            return f'{KB_count}KB'
+            return f'{round(KB_count, n)}KB'
         MB_count = KB_count / 1024
         if MB_count < 1024:
-            return f'{MB_count}MB'
+            return f'{round(MB_count, n)}MB'
         GB_count = MB_count / 1024
-        return f'{GB_count}GB'
+        return f'{round(GB_count, n)}GB'
     
     @staticmethod
     def compress(output_path: str, *filepath: str):
@@ -56,6 +64,15 @@ class ybytes(bytes):
         with zipfile.ZipFile(zip_file, 'r') as f:
             f.extractall(output_dir)
 
+    def md5(self) -> 'ystr':
+        return ystr(hashlib.md5(self).hexdigest())
+    
+    def __str__(self):
+        return f'<bytes: {self.size()}>'
+    
+    def __repr__(self):
+        return f'<bytes: {self.size()}>'
+    
 #------------------------
 
 class ystr(str):
@@ -432,7 +449,11 @@ class ystr(str):
                 yield ystr(cur)       
 
     def md5(self, encode='utf-8') -> 'ystr':
-        return ystr(hashlib.md5(self.encode(encoding=encode)).hexdigest())
+        return ybytes.from_str(self, encode=encode).md5()
+    
+    @staticmethod
+    def uuid() -> 'ystr':
+        return ystr(uuid.uuid4())
 
 class row():
     
@@ -500,7 +521,9 @@ class datetime():
         return ystr(int(time.mktime(self.time_struct)))
     
     @staticmethod
-    def now() -> 'ystr':
+    def now(onlydate=False) -> 'ystr':
+        if onlydate:
+            return ystr().timestamp().now().timestamp().to_datetime(fmt='%Y-%m-%d')    
         return ystr().timestamp().now().timestamp().to_datetime()
     
     def weekday(self) -> int:
@@ -598,8 +621,8 @@ class filepath():
     def txt(self, encode='utf-8') -> 'TextFileHandler':
         return TextFileHandler(self.s, encode)
     
-    def db(self) -> 'DBFileHandler':
-        return DBFileHandler(self.s)
+    def db(self, auto_commit=True, auto_close=True, check_same_thread=True) -> 'DBFileHandler':
+        return DBFileHandler(self.s, auto_commit=auto_commit, auto_close=auto_close, check_same_thread=check_same_thread)
         
 class TextFileHandler:
     
@@ -614,19 +637,23 @@ class TextFileHandler:
 
 class DBFileHandler:
 
-    def __init__(self, path) -> None:
+    def __init__(self, path, auto_commit=True, auto_close=True, check_same_thread=True) -> None:
         self.path = path
-        self.con = sqlite3.connect(path)
-        # self.con = sqlite3.connect(db_path, check_same_thread=False)
+        self.auto_commit = auto_commit
+        self.auto_close = auto_close
+        self.con = sqlite3.connect(path, check_same_thread=check_same_thread)
         self.cr = self.con.cursor()
 
-    def execute(self, sql: str, auto_commit=True, auto_close=True) -> 'ylist':
+    def execute(self, sql: str, para=(), auto_commit=None, auto_close=None, print_sql=False) -> 'ylist':
+        if print_sql:
+            logger.info(f'excute sql: {sql} para count: {len(para)}')
         try:
-            res = self.cr.execute(sql).fetchall()
+            res = self.cr.execute(sql, para).fetchall()
         except Exception as e:
-            print(f'Debug: sql = {sql}')
             e.add_note(f'Note: sql = {sql}')
             raise
+        auto_commit = self.auto_commit if auto_commit == None else auto_commit
+        auto_close = self.auto_close if auto_close == None else auto_close
         if auto_commit:
             self.commit()
         if auto_close:
@@ -643,7 +670,7 @@ class DBFileHandler:
         return SimpleSqlExecuter(self, table_name)
     
     def tables(self) -> 'ylist':
-        res = self.table('sqlite_master').cols('name').select().flatten()
+        res = self.table('sqlite_master').cols('name').where("type='table'").select().flatten()
         res.remove('sqlite_sequence')
         return res
 
@@ -654,52 +681,88 @@ class SimpleSqlExecuter:
         self.table_name = table_name
         self.sb = SimpleSqlBuilder()
         self.sb.table(table_name)
+        self.parameter = []
+        self.force = False
 
     def cols(self, *col: str) -> 'SimpleSqlExecuter':
         self.sb.cols(*col)
         return self
-
-    def add_row(self, *value) -> 'SimpleSqlExecuter':
-        self.sb.add_row(*value)
+    
+    def vals(self, *val) -> 'SimpleSqlExecuter':
+        self.sb.vals(*val)
         return self
     
-    def set(self, *set_fragment: str) -> 'SimpleSqlExecuter':
-        self.sb.set(*set_fragment)
+    def row(self) -> 'SimpleSqlExecuter':
+        self.sb.cols()
+        self.sb.vals()
+        return self
+        
+    def field(self, col: str, val, para=None, add_none=False) -> 'SimpleSqlExecuter':
+        if val != ...:
+            self.sb.field(col, val, add_none)
+            return self
+        if para == None and not add_none:
+            return self
+        self.sb.field(col, val, add_none)
+        self.parameter.append(para)
         return self
 
     def where(self, where_fragment: str) -> 'SimpleSqlExecuter':
         self.sb.where(where_fragment)
         return self
     
-    def insert(self) -> 'ylist':
+    def extra(self, extra_fragment: str) -> 'SimpleSqlExecuter':
+        self.sb.extra(extra_fragment)
+        return self
+    
+    def paras(self, *para) -> 'SimpleSqlExecuter':
+        self.parameter = list(para)
+        return self
+    
+    def Y(self) -> 'SimpleSqlExecuter':
+        self.force = True
+        return self
+    
+    def N(self) -> 'SimpleSqlExecuter':
+        self.force = False
+        return self
+    
+    def insert(self, print_sql=False) -> 'ylist':
         self.sb.method('insert')
         sql = self.sb.build()
-        return self.dao.execute(sql)
+        return self.dao.execute(sql, para=self.parameter, print_sql=print_sql)
 
-    def update(self) -> 'ylist':
+    def update(self, print_sql=False) -> 'ylist':
         self.sb.method('update')
         sql = self.sb.build()
-        return self.dao.execute(sql)
+        if self.sb.where_fragment in ('', None) and not self.force:
+            raise Exception('no where condition, will update whole table, are you sure? (Y/N)')
+        return self.dao.execute(sql, para=self.parameter, print_sql=print_sql)
     
-    def delete(self) -> 'ylist':
+    def delete(self, print_sql=False) -> 'ylist':
         self.sb.method('delete')
         sql = self.sb.build()
-        return self.dao.execute(sql)
+        if self.sb.where_fragment in ('', None) and not self.force:
+            raise Exception('no where condition, will delete all rows, are you sure? (Y/N)')
+        return self.dao.execute(sql, para=self.parameter, print_sql=print_sql)
     
-    def select(self) -> 'ylist':
+    def select(self, print_sql=False) -> 'ylist':
         self.sb.method('select')
         sql = self.sb.build()
-        return self.dao.execute(sql)
+        return self.dao.execute(sql, para=self.parameter, print_sql=print_sql)
 
     def describe(self) -> 'ystr':
-        res = self.dao.execute(
+        res = self.dao.execute (
             f"select sql from sqlite_master where name = '{self.table_name}'",
-            auto_close = False,
+            auto_commit=True, auto_close=False,
         ).flatten()
         if len(res) == 0:
             raise Exception(f'table {self.table_name} not exists')
         table_detail = ystr(res[0]).sql().parse()
-        row_count = self.dao.execute(f'select count(*) from {self.table_name}').flatten()
+        row_count = self.dao.execute (
+            f'select count(*) from {self.table_name}',
+            auto_commit=True,
+        ).flatten()
         table_detail.row_count = row_count[0]
         return ystr().json().from_object(table_detail)
             
@@ -1111,53 +1174,77 @@ class SimpleSqlBuilder:
     def __init__(self) -> None:
         self.sql_type = ''
         self.table_name = ''
-        self.columns: list[str] = []
-        self.insert_values: list[str] = []
-        self.update_sets: list[str] = []
+        self.columns: list[list[str]] = []
+        self.values: list[list[str]] = []
         self.where_fragment = ''
-        
+        self.extra_fragment = ''
+
     def table(self, table_name: str) -> 'SimpleSqlBuilder':
         self.table_name = table_name
         return self
-
+    
     def cols(self, *col: str) -> 'SimpleSqlBuilder':
-        self.columns = list(col)
-        return self
-
-    def add_row(self, *value) -> 'SimpleSqlBuilder':
-        self.insert_values.append(f'({", ".join(value)})')
-        return self
-
-    def method(self, sql_type: str) -> 'SimpleSqlBuilder':
-        self.sql_type = sql_type
+        self.columns.append(list(col))
         return self
     
-    def set(self, *set_fragment: str) -> 'SimpleSqlBuilder':
-        self.update_sets = list(set_fragment)
+    @staticmethod
+    def _parse_(v):
+        if v == None:
+            return 'NULL'
+        if v == ...:
+            return '?'
+        if isinstance(v, str):
+            v = v.replace("'", "''")
+            return "'"+v+"'"
+        return str(v)
+
+    def vals(self, *vals) -> 'SimpleSqlBuilder':
+        self.values.append([SimpleSqlBuilder._parse_(v) for v in vals])
+        return self
+
+    def field(self, col: str, val, add_none=False) -> 'SimpleSqlBuilder':
+        if val == None and not add_none:
+            return
+        self.columns[-1].append(col)
+        self.values[-1].append(SimpleSqlBuilder._parse_(val))
+    
+    def method(self, sql_type: str) -> 'SimpleSqlBuilder':
+        self.sql_type = sql_type
         return self
 
     def where(self, where_fragment: str) -> 'SimpleSqlBuilder':
         self.where_fragment = where_fragment
         return self
+    
+    def extra(self, extra_fragment: str) -> 'SimpleSqlBuilder':
+        self.extra_fragment = extra_fragment
+        return self
 
     def build(self) -> 'ystr':
         if self.sql_type == 'insert':
-            sql = f"insert into {self.table_name} ({', '.join(self.columns)}) values {', '.join(self.insert_values)};"
+            column_fragment = f"({', '.join(self.columns[0])})" if len(self.columns) > 0 else ''
+            insert_fragment = ', '.join(f'({", ".join(val)})' for val in self.values)
+            sql = f"insert into {self.table_name} {column_fragment} values {insert_fragment}"
         elif self.sql_type == 'update':
-            sql = f"update {self.table_name} set {', '.join(self.update_sets)}"
+            update_fragment = ', '.join(f'{self.columns[0][i]}={self.values[0][i]}' for i in range(len(self.columns[0])))
+            sql = f"update {self.table_name} set {update_fragment}"
             if self.where_fragment != '':
-                sql += f" where {self.where_fragment};"
+                sql += f" where {self.where_fragment}"
         elif self.sql_type == 'delete':
             sql = f"delete from {self.table_name}"
             if self.where_fragment != '':
-                sql += f" where {self.where_fragment};"
+                sql += f" where {self.where_fragment}"
         elif self.sql_type == 'select':
-            cols_fragment = '*' if self.columns == [] else ', '.join(self.columns)
+            # todo: selected col
+            cols_fragment = '*' if self.columns == [] else ', '.join(self.columns[0])
             sql = f"select {cols_fragment} from {self.table_name}"
             if self.where_fragment != '':
-                sql += f" where {self.where_fragment};"
+                sql += f" where {self.where_fragment}"
         else:
             raise Exception(f'invalid sql type: {self.sql_type}')
+        if self.extra_fragment != '':
+            sql += ' ' + self.extra_fragment
+        sql += ';'
         return ystr(sql)
 
 class Col:
@@ -1291,13 +1378,17 @@ class ylist(list):
         return self
 
     def unique(self) -> 'ylist':
-        ret = []
+        ret = ylist()
         st = set()
         for x in self:
             if x not in st:
                 ret.append(x)
                 st.add(x)
         return ret
+    
+    def sort(self, key=None, reverse=False) -> 'ylist':
+        super().sort(key=key, reverse=reverse)
+        return self
     
     def group(self, size: int = 0) -> 'ylist':
         if size <= 0:
@@ -1602,7 +1693,6 @@ class ypic():
         p += shift // 3
         c = shift % 3
         return p, c
-
 
 
 
